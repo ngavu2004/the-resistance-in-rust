@@ -8,8 +8,6 @@ fn main() -> std::io::Result<()> {
 
     println!("Connected to game server!");
 
-    let mut buffer = [0u8; 1024];
-    
     // Get players name
     let player_name = match env::args().nth(1) {
         Some(name) => name,
@@ -31,7 +29,15 @@ fn main() -> std::io::Result<()> {
         server_listener(listerner_stream);
     });
 
-    loop {};
+    // start the input here
+    let mut input = String::new();
+    loop {
+        io::stdin()
+            .read_line(&mut input)
+            .expect("Failed to read line");
+        stream.write_all(input.as_bytes())?;
+    }
+    
 
     Ok(())
 }
@@ -42,7 +48,6 @@ fn server_listener(mut stream: UnixStream) {
     loop {
         let n = stream.read(&mut buffer).unwrap();
         if n > 0 {
-            println!("N is: {n}");
             println!(
                 "{}",
                 String::from_utf8_lossy(&buffer[..n])

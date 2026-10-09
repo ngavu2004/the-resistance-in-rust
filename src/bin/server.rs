@@ -1,10 +1,21 @@
-
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::os::unix::fs::PermissionsExt;
-use std::io::{self, Read, Write};
+use std::io::{self, BufRead, BufReader, Read, Write};
 use std::collections::HashMap;
+use std::sync::mpsc;
+use std::thread;
 use rand::Rng;
 use rand::seq::IndexedRandom;
+
+enum ResistanceOperativeRole {
+    Merlin,
+    Operative
+}
+
+enum GovermentSpyRole {
+    Assassin,
+    GovernmentSpy
+}
 
 #[derive(Eq, Hash, PartialEq, Debug, Clone)]
 enum Role {
@@ -13,6 +24,13 @@ enum Role {
     ResistanceOperative,
     GovernmentSpy,
     Undecided
+}
+
+enum GamePhase {
+    Connect,
+    SpyReview,
+    LeaderPick,
+    TeamVote
 }
 
 impl Role {
@@ -35,13 +53,35 @@ struct Player {
     role: Role
 }
 
-fn choose_player(id_list: &Vec<i32>, n: usize, rng:&mut impl Rng) -> Vec<i32> {
+fn choose_player(id_list: &[i32], n: usize, rng:&mut impl Rng) -> Vec<i32> {
     id_list.sample(rng, n).copied().collect()
 }
 
 fn send_message(stream: &mut UnixStream, message: &String) {
     let message = message.to_owned();
     stream.write_all(message.as_bytes()).unwrap();
+}
+
+fn handle_player(stream: UnixStream, id: i32, tx: mpsc::Sender<(i32, String)>) {
+    // read from player stream
+    
+    let reader = BufReader::new(stream);
+
+    // get message and send it to rx
+    for line in reader.lines() {
+        match line {
+            Ok(message) => {
+                if tx.send((id, message)).is_err() {
+                    break;
+                }
+            }
+            Err(e) => {
+                println!("{}", format!("Player {} disconnected: {e}", id));
+                break;
+            }
+        }
+    }
+
 }
 
 fn main() -> std::io::Result<()> {
@@ -70,7 +110,7 @@ fn main() -> std::io::Result<()> {
         }
     };
     
-    // ==== CONNECTING PLAYERS ====
+    // ==== PHASE 0: CONNECTING PLAYERS ====
     let mut players_map : HashMap<i32, Player> = HashMap::new(); // map id to player object
     let mut player_count : i32 = 0;
     println!("Waiting for players to connect...");
@@ -91,6 +131,18 @@ fn main() -> std::io::Result<()> {
         player_count += 1;
         let new_player = Player { id: new_player_id, name: player_name, stream: stream, role: Role::Undecided};
         players_map.insert(new_player_id, new_player);
+    }
+
+    // Spawn listener thread
+    let (tx, rx) = mpsc::channel::<(i32, String)>(); // the thread return a tuple of id and message
+    
+    for (&player_id, player) in &players_map {
+        let tx = tx.clone();
+        let stream = player.stream.try_clone().unwrap();
+        let id = player_id;
+        thread::spawn(move || {
+            handle_player(stream, id, tx);
+        });
     }
 
     // Create a hash map to map roles to player ids;
@@ -141,10 +193,10 @@ fn main() -> std::io::Result<()> {
         role2player_map.insert(role, chosen);
     }
     
-    // ==== ROLE ANNOUCEMENT ====
+    // ==== PHASE 1: ROLE ANNOUCEMENT ====
     println!("\n== PLAYERS INFO ==\n");
     for id in 0..player_count {
-        let mut player : &mut Player = players_map.get_mut(&id).ok_or_else(|| {
+        let player : &mut Player = players_map.get_mut(&id).ok_or_else(|| {
             io::Error::new(
                 io::ErrorKind::NotFound,
                 "Missing player",
@@ -156,6 +208,97 @@ fn main() -> std::io::Result<()> {
 
         send_message(&mut player.stream, &role_message);
         println!("{player:?}");
+    }
+
+    // ==== PHASE 2: GOVERNMENT SPIES MEET UP ====
+    let government_spies_ids = role2player_map.get(&Role::GovernmentSpy).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::NotFound,
+                "Missing role",
+            )
+        })?;
+    let assasin_id = role2player_map.get(&Role::Assassin).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::NotFound,
+                "Missing role",
+            )
+        })?;
+
+    let mut government_spies_names : Vec<String> = Vec::new();
+    
+    // Get the names for all the government spies (including assassin_id)
+    for id in government_spies_ids {
+        let player = players_map.get(&id).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::NotFound,
+                "Missing player",
+            )
+        })?;
+        let player_name = player.name.clone();
+        government_spies_names.push(player_name);
+    }
+
+    for id in assasin_id {
+        let player = players_map.get(&id).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::NotFound,
+                "Missing player",
+            )
+        })?;
+        let player_name = player.name.clone();
+        government_spies_names.push(player_name);
+    }
+
+    // Send the message
+    let names_string = government_spies_names.join(", ");
+    let message = format!("Hey goverment spies, this is your team: {names_string}");
+
+    for id in government_spies_ids {
+        let player : &mut Player = players_map.get_mut(&id).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::NotFound,
+                "Missing player",
+            )
+        })?;
+        send_message(&mut player.stream, &message);
+    }
+
+    for id in assasin_id {
+        let player : &mut Player = players_map.get_mut(&id).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::NotFound,
+                "Missing player",
+            )
+        })?;
+        send_message(&mut player.stream, &message);
+    }
+
+
+    // Reveal to Merlin
+    let merlin_id = role2player_map.get(&Role::Merlin).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::NotFound,
+                "Missing role",
+            )
+        })?;
+
+    let message = format!("Hey Merlin, this is the list of Goverment Spies: {names_string}.");
+    for id in merlin_id {
+        let player : &mut Player = players_map.get_mut(&id).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::NotFound,
+                "Missing player",
+            )
+        })?;
+        send_message(&mut player.stream, &message);
+    }
+
+    // ===== PHASE 3: STARTING THE TASK ====
+    let leader = 0;
+    for (player_id, message) in rx {
+        if (player_id == leader) {
+            println!("Leader message: {message}");
+        }
     }
 
     
