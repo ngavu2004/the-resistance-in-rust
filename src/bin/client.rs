@@ -1,4 +1,5 @@
 use std::env;
+use std::io::Error;
 use std::os::unix::net::UnixStream;
 use std::io::{self, Read, Write};
 use std::thread;
@@ -23,23 +24,32 @@ fn main() -> std::io::Result<()> {
     stream.write_all(player_name.as_bytes())?;
 
     // Spawn a thread to listen to the server
-    let listerner_stream = stream.try_clone()?;
+    let listener_stream = stream.try_clone()?;
 
-    let server_handler = thread::spawn( move || {
-        server_listener(listerner_stream);
+    let server_listener_handler = thread::spawn( move || {
+        server_listener(listener_stream);
     });
 
-    // start the input here
+    // start a thread to send input to the server
+    let server_input_handler = thread::spawn( move || {
+        server_transmitter(stream);
+    });
+
+    server_listener_handler.join().unwrap();
+    Ok(())
+}
+
+fn server_transmitter(mut stream: UnixStream) {
     let mut input = String::new();
     loop {
+        input.clear();
+
         io::stdin()
             .read_line(&mut input)
             .expect("Failed to read line");
-        stream.write_all(input.as_bytes())?;
+        stream.write_all(input.as_bytes()).unwrap();
     }
     
-
-    Ok(())
 }
 
 fn server_listener(mut stream: UnixStream) {
@@ -47,8 +57,12 @@ fn server_listener(mut stream: UnixStream) {
 
     loop {
         let n = stream.read(&mut buffer).unwrap();
+        if n == 0 {
+            println!("Server disconnected");
+            break;
+        }
         if n > 0 {
-            println!(
+            print!(
                 "{}",
                 String::from_utf8_lossy(&buffer[..n])
             );
