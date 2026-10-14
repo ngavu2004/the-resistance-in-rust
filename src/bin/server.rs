@@ -58,6 +58,7 @@ enum Recipient {
     Everyone,
     Faction(Faction),
     Id(i32),
+    PlayerIds(Vec<i32>),
     SpecialRole(SpecialRole)
 }
 
@@ -73,18 +74,34 @@ struct Player {
 
 struct Game {
     players: HashMap<i32, Player>,
+    assassin_id: i32,
+    merlin_id: i32,
     game_phase: GamePhase,
     resist_op_c: usize,
-    gov_spy_c: usize
+    gov_spy_c: usize,
+    succeeded_task: i32
 }
 
 impl Game {
-    fn get_player_name(&self, id: &i32) -> String {
-        self.players.get(id).unwrap().name.clone()
+    fn get_player_name(&self, id: &i32) -> Option<String> {
+        match self.players.get(id) {
+            Some(player) => { Some(player.name.clone()) },
+            None => { None }
+        }
     }
 
     fn get_mut_player(&mut self, id: &i32) -> &mut Player {
        self.players.get_mut(id).expect("Player not found")
+    }
+
+    fn get_all_players_names(&self) -> String {
+        let mut player_names : Vec<String> = Vec::new();
+
+        for (id, player) in &self.players {
+            player_names.push(player.name.clone());
+        }
+
+        return player_names.join(",");
     }
 
     fn assign_roles(&mut self) {
@@ -102,6 +119,7 @@ impl Game {
 
         let mut assasin_player = self.get_mut_player(&assassin_id);
         assasin_player.special_role = Some(SpecialRole::Assassin);
+        self.assassin_id = assassin_id;
 
         // remove the gov spies from choices
         choices.retain(|x| !gov_spy_ids.contains(x));
@@ -116,20 +134,24 @@ impl Game {
 
         let mut merlin_player = self.get_mut_player(&merlin_id);
         merlin_player.special_role = Some(SpecialRole::Merlin);
+        self.merlin_id = merlin_id;
     }
 
     fn send_message(&mut self, recipient: Recipient, message: &str) {
         for (id, player) in &mut self.players {
-            let is_recipient : bool = match recipient {
+            let is_recipient : bool = match &recipient {
                 Recipient::Everyone => true,
                 Recipient::Faction(f) => {
-                    player.faction == Some(f)
+                    player.faction == Some(*f)
                 },
                 Recipient::Id(id) => {
-                    player.id == id
+                    player.id == *id
                 },
+                Recipient::PlayerIds(ids) => {
+                    ids.contains(id)
+                }
                 Recipient::SpecialRole(role) => {
-                    player.special_role == Some(role)
+                    player.special_role == Some(*role)
                 }
             };
 
@@ -139,27 +161,27 @@ impl Game {
         }
     }
 
-    fn is_leader_message_valid(&self, message: &str, leader_id: &i32) -> Option<Vec<String>> {
-        let chosen_names : Vec<String> = message
-            .split(',')
-            .map(|x| x.trim().to_owned())
-            .collect();
+    fn is_leader_message_valid(&self, message: &str) -> Option<Vec<i32>> {
+        let mut chosen_team_ids : Vec<i32> = Vec::new();
 
-        for name in &chosen_names {
+        let chosen_names: Vec<&str> = message.split(',').collect();
+
+        for name in chosen_names {
             let mut is_valid = false;
             for (id, player) in &self.players {
-                if *name == player.name {
+                if player.name == name {
+                    chosen_team_ids.push(*id);
                     is_valid = true;
-                    break
+                    break;
                 }
             }
 
             if !is_valid {
-                return None
+                return None;
             }
         }
 
-        return Some(chosen_names)
+        return Some(chosen_team_ids)
     }
 
     fn is_team_vote_valid(&self, has_vote: &mut i32, player_id: &i32, message: &str) -> i32 {
@@ -182,6 +204,17 @@ impl Game {
         } else {
             0
         }
+    }
+
+    // return the id of the player picked by assassin
+    fn is_assasin_vote_valid(&self, message: &str) -> Option<i32> {
+        for (id, player) in &self.players {
+            if player.name == message {
+                return Some(*id);
+            }
+        }
+
+        return None;
     }
 }
 
@@ -234,7 +267,7 @@ fn main() -> std::io::Result<()> {
         }
     };
 
-    let mut game = Game { players: HashMap::new(), game_phase: GamePhase::Connect, resist_op_c: player_num - 3, gov_spy_c: 3};
+    let mut game = Game { players: HashMap::new(), game_phase: GamePhase::Connect, resist_op_c: player_num - 3, gov_spy_c: 3, succeeded_task: 0, assassin_id: -1, merlin_id: -1};
     
     // ==== PHASE 0: CONNECTING PLAYERS ====
     let mut player_count : usize = 0;
@@ -322,6 +355,7 @@ fn main() -> std::io::Result<()> {
     let message = format!("Her Merlin, these are the spy team: {gov_spies_name}");
     game.send_message(Recipient::SpecialRole(SpecialRole::Merlin), &message);
 
+
     // ===== PHASE 3: STARTING THE TASKS ====
 
     let mut leader = 0;
@@ -334,7 +368,8 @@ fn main() -> std::io::Result<()> {
         // === 3.1: LEADER PICK THE TEAM ===
         game.game_phase = GamePhase::LeaderPick;
 
-        let mut picked_team : Vec<String> = Vec::new();
+        let mut picked_team : Vec<i32> = Vec::new();
+        let mut picked_team_names = String::from("");
 
         for pick_team_attempt in 0..5 {
             game.send_message(Recipient::Everyone, &format!("Pick team attempt number {}", pick_team_attempt+1));
@@ -350,6 +385,7 @@ fn main() -> std::io::Result<()> {
                             let team_list = match game.is_leader_message_valid(&message) {
                                 Some(list) => {
                                     picked_team = list.clone();
+                                    picked_team_names = message.clone();
                                     break;
                                 },
                                 None => {
@@ -367,7 +403,7 @@ fn main() -> std::io::Result<()> {
 
             // === 3.2: TEAM DISCUSS ON THE QUEST MEMBER ===
             game.game_phase = GamePhase::TeamDiscuss;
-            let new_message = format!("Everyone, this is the quest team that the leader picked: {}. Please start the discussion. You'll have 2 minutes to discuss.", picked_team.join(", "));
+            let new_message = format!("Everyone, this is the quest team that the leader picked: {}. Please start the discussion. You'll have 2 minutes to discuss.", picked_team_names);
             game.send_message(Recipient::Everyone, &new_message);
 
             // The team will have 2 mins to discuss 
@@ -384,7 +420,7 @@ fn main() -> std::io::Result<()> {
                                 continue;
                             }
                         }
-                        let m = format!("{}: {}", game.get_player_name(&player_id), &message);
+                        let m = format!("{}: {}", game.get_player_name(&player_id).unwrap(), &message);
                         game.send_message(Recipient::Everyone, &m);
                     },
                     Err(RecvTimeoutError::Timeout) => {
@@ -427,20 +463,111 @@ fn main() -> std::io::Result<()> {
                 }
             }
 
-            game.send_message(Recipient::Everyone, &format!("Vote result: {vote_result}"));
             if vote_result > 0 {
+                game.send_message(Recipient::Everyone, &format!("The majority agreed about the Quest team. Let's move to the Quest phase!"));
                 break;
             } else {
+                game.send_message(Recipient::Everyone, &format!("The majority disagreed about the Quest team."));
                 if pick_team_attempt == 4 {
+                    game.send_message(Recipient::Everyone, &format!("This is the 5th failed pick team attempt. The Goverment Spy won!"));
                     game.game_phase = GamePhase::GovermentWin;
                     break;
+                } else {
+                    game.send_message(Recipient::Everyone, &format!("Let's pick again!"));
                 }
             }
         }
         
-        
+        // ==== PHASE 3.3: QUEST TEAM START TO VOTE ====
+        game.send_message(Recipient::Everyone, "Quest team started to vote.");
+        game.send_message(Recipient::PlayerIds(picked_team.clone()), "Hey Quest team, please vote 'yes' if you want this quest to succeed, otherwise vote 'no'. We need at least 2 votes for the quest to succeed. You'll have 1 minute.");
+
+        let mut has_vote = 0;
+        let mut bit_mask = 0;
+        let mut vote_result : i32 = 0;
+        for id in &picked_team {
+            bit_mask |= 1 << id;
+        }
+        println!("bit mask: {bit_mask:b}");
+        loop {
+            match rx.recv_timeout(Duration::from_secs(60)) {
+                Ok((player_id, message)) => {
+                    if picked_team.contains(&player_id) {
+                        println!("Has vote: {has_vote:b}");
+                        let vote = game.is_team_vote_valid(&mut has_vote, &player_id, &message);
+                        if vote == 0 {
+                            game.send_message(Recipient::Id(player_id), "Invalid vote or you already vote");
+                        }
+                        vote_result += vote;
+                        if has_vote == bit_mask {
+                            break;
+                        }
+                    }
+                    
+                },
+                Err(RecvTimeoutError::Timeout) => {
+                    game.send_message(Recipient::Everyone, "Discussion time is up");
+                    break;
+                },
+                Err(RecvTimeoutError::Disconnected) => {
+                    println!("All senders disconnected");
+                    break;
+                }
+            }
+        }
+
+        if vote_result > 0 {
+            game.send_message(Recipient::Everyone, &format!("The quest has succeeded. Congrats the Resistance!"));
+            game.succeeded_task += 1;
+        } else {
+            game.send_message(Recipient::Everyone, &format!("The quest has failed. Good job Government Spies!"));
+        }
 
         leader = (leader + 1) % player_count;
+    }
+
+    // ==== PHASE 4: ASSASSIN TRY TO KILL MERLIN
+    game.send_message(Recipient::Everyone, &format!("The current succeeded task is {}/5. Assassin, please put in the name of the person who you think is Merlin.", game.succeeded_task));
+    game.send_message(Recipient::SpecialRole(SpecialRole::Assassin), &format!("Assassin, your valid votes are {}. You will have 1 minute.", game.get_all_players_names()));
+
+    loop {
+        match rx.recv_timeout(Duration::from_secs(60)) {
+            Ok((player_id, message)) => {
+                if player_id == game.assassin_id {
+                    match game.is_assasin_vote_valid(&message) {
+                        Some(id) => {
+                            if id == game.merlin_id {
+                                game.send_message(Recipient::Everyone, "Assassin has killed Merlin!");
+                                game.game_phase = GamePhase::GovermentWin;
+                            } else {
+                                game.send_message(Recipient::Everyone, "Assassin has missed the shot!");
+                            };
+                            break;
+                        },
+                        None => {
+                            game.send_message(Recipient::SpecialRole(SpecialRole::Assassin), "Invalid input, please try again!");
+                        }
+                    }
+                }
+            },
+            Err(RecvTimeoutError::Timeout) => {
+                game.send_message(Recipient::SpecialRole(SpecialRole::Assassin), "Decided time is up!");
+                break;
+            },
+            Err(RecvTimeoutError::Disconnected) => {
+                println!("All senders disconnected");
+                break;
+            }
+        }
+    }
+
+    game.send_message(Recipient::Everyone, &format!("The number of succeeded task is {}/5!", game.succeeded_task));
+    if game.game_phase != GamePhase::GovermentWin {
+        if game.succeeded_task >= 3 {
+            game.game_phase = GamePhase::ResistanceWin;
+        } else {
+            game.game_phase = GamePhase::GovermentWin;
+        }
     }
 
     match game.game_phase {
