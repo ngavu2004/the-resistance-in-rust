@@ -1,0 +1,96 @@
+name: Build and Release
+
+on:
+  push:
+    branches:
+      - main
+    tags:
+      - "v*"
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            artifact: linux-x86_64
+          - os: windows-latest
+            artifact: windows-x86_64
+          - os: macos-latest
+            artifact: macos-arm64
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+
+      - name: Run tests
+        run: cargo test --all-targets
+
+      - name: Build server and client
+        run: cargo build --release --bins
+
+      - name: Package binaries (Linux/macOS)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          mkdir -p dist
+          cp target/release/server dist/
+          cp target/release/client dist/
+          tar -czf "${{ matrix.artifact }}.tar.gz" -C dist .
+          mkdir -p release-assets
+          mv "${{ matrix.artifact }}.tar.gz" release-assets/
+
+      - name: Package binaries (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force dist | Out-Null
+          Copy-Item target/release/server.exe dist/
+          Copy-Item target/release/client.exe dist/
+          Compress-Archive -Path dist/* -DestinationPath "${{ matrix.artifact }}.zip"
+          New-Item -ItemType Directory -Force release-assets | Out-Null
+          Move-Item "${{ matrix.artifact }}.zip" release-assets/
+
+      - name: Upload release package
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: release-assets/*
+          if-no-files-found: error
+
+  release:
+    name: Publish GitHub Release
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Download all platform packages
+        uses: actions/download-artifact@v4
+        with:
+          path: release-assets
+          pattern: "*"
+          merge-multiple: true
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          generate_release_notes: true
+          files: release-assets/*
