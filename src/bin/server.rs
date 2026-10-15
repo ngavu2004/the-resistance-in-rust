@@ -364,7 +364,7 @@ fn main() -> std::io::Result<()> {
         if game.game_phase == GamePhase::GovermentWin || game.game_phase == GamePhase::ResistanceWin {
             break;
         }
-        game.send_message(Recipient::Everyone, &format!("== START TASK {} ==", task+1));
+        game.send_message(Recipient::Everyone, &format!("\n== START TASK {} ==", task+1));
         // === 3.1: LEADER PICK THE TEAM ===
         game.game_phase = GamePhase::LeaderPick;
 
@@ -372,8 +372,8 @@ fn main() -> std::io::Result<()> {
         let mut picked_team_names = String::from("");
 
         for pick_team_attempt in 0..5 {
-            game.send_message(Recipient::Everyone, &format!("Pick team attempt number {}", pick_team_attempt+1));
-            game.send_message(Recipient::Id(leader), "Hey leader, please enter a list of name for the team with format: 'name1,name2,name3'");
+            game.send_message(Recipient::Everyone, &format!("\nPick team attempt number {}. Leader: {}", pick_team_attempt+1, game.get_player_name(&leader).unwrap()));
+            game.send_message(Recipient::Id(leader), &format!("Hey leader, please enter a list of name for the team with format: 'name1,name2,name3'. Your options are: {}", game.get_all_players_names()));
 
             loop {
                 match rx.recv() {
