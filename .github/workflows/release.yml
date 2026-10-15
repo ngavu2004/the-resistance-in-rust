@@ -24,8 +24,6 @@ jobs:
         include:
           - os: ubuntu-latest
             artifact: linux-x86_64
-          - os: windows-latest
-            artifact: windows-x86_64
           - os: macos-latest
             artifact: macos-arm64
 
@@ -55,17 +53,6 @@ jobs:
           tar -czf "${{ matrix.artifact }}.tar.gz" -C dist .
           mkdir -p release-assets
           mv "${{ matrix.artifact }}.tar.gz" release-assets/
-
-      - name: Package binaries (Windows)
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          New-Item -ItemType Directory -Force dist | Out-Null
-          Copy-Item target/release/server.exe dist/
-          Copy-Item target/release/client.exe dist/
-          Compress-Archive -Path dist/* -DestinationPath "${{ matrix.artifact }}.zip"
-          New-Item -ItemType Directory -Force release-assets | Out-Null
-          Move-Item "${{ matrix.artifact }}.zip" release-assets/
 
       - name: Upload release package
         uses: actions/upload-artifact@v4
